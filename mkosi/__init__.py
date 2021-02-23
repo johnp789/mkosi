@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1+
 
+import dataclasses
 import argparse
 import collections
 import configparser
@@ -49,7 +50,6 @@ from typing import (
     Set,
     TextIO,
     Tuple,
-    TypeVar,
     Union,
     cast,
     TYPE_CHECKING,
@@ -224,21 +224,6 @@ def tmp_dir() -> str:
     return os.environ.get("TMPDIR") or "/var/tmp"
 
 
-class CommandLineArguments(argparse.Namespace):
-    """Type-hinted storage for command line arguments."""
-
-    swap_partno: Optional[int] = None
-    esp_partno: Optional[int] = None
-    xbootldr_partno: Optional[int] = None
-    minimize: bool = False
-
-    def generated_root(self) -> bool:
-        """Returns whether this configuration means we need to generate a file system from a prepared tree
-
-        This is needed for anything squashfs and when root minimization is required."""
-        return self.minimize or self.output_format.is_squashfs()
-
-
 class SourceFileTransfer(enum.Enum):
     copy_all = "copy-all"
     copy_git_cached = "copy-git-cached"
@@ -337,6 +322,122 @@ class Distribution(enum.Enum):
 
     def __str__(self) -> str:
         return self.name
+
+
+@dataclasses.dataclass
+class CommandLineArguments:
+    """Type-hinted storage for command line arguments."""
+
+    verb: str
+    cmdline: List[str]
+    distribution: Distribution
+    release: str
+    mirror: Optional[str]
+    repositories: List[str]
+    architecture: Optional[str]
+    output_format: OutputFormat
+    output: str
+    output_dir: Optional[str]
+    force_count: int
+    bootable: bool
+    boot_protocols: List[str]
+    kernel_command_line: List[str]
+    secure_boot: bool
+    secure_boot_key: str
+    secure_boot_certificate: str
+    secure_boot_valid_days: str
+    secure_boot_common_name: str
+    read_only: bool
+    encrypt: Optional[str]
+    verity: bool
+    compress: Union[None, str, bool]
+    mksquashfs_tool: List[str]
+    xz: bool
+    qcow2: bool
+    hostname: Optional[str]
+    no_chown: bool
+    tar_strip_selinux_context: bool
+    incremental: bool
+    minimize: bool
+    with_unified_kernel_images: bool
+    gpt_first_lba: Optional[int]
+    hostonly_initrd: bool
+    packages: List[str]
+    with_docs: bool
+    with_tests: bool
+    cache_path: Optional[str]
+    extra_trees: List[str]
+    skeleton_trees: List[str]
+    build_script: Optional[str]
+    build_env: List[str]
+    build_sources: Optional[str]
+    build_dir: Optional[str]
+    include_dir: Optional[str]
+    install_dir: Optional[str]
+    build_packages: List[str]
+    skip_final_phase: bool
+    postinst_script: Optional[str]
+    prepare_script: Optional[str]
+    finalize_script: Optional[str]
+    source_file_transfer: SourceFileTransfer
+    source_file_transfer_final: Optional[SourceFileTransfer]
+    with_network: bool
+    nspawn_settings: Optional[str]
+    root_size: int
+    esp_size: Optional[int]
+    xbootldr_size: Optional[int]
+    swap_size: Optional[int]
+    home_size: Optional[int]
+    srv_size: Optional[int]
+    var_size: Optional[int]
+    tmp_size: Optional[int]
+    checksum: bool
+    sign: bool
+    key: Optional[str]
+    bmap: bool
+    password: Optional[str]
+    password_is_hashed: bool
+    autologin: bool
+    extra_search_paths: List[str]
+    qemu_headless: bool
+    network_veth: bool
+    ephemeral: bool
+    ssh: bool
+    directory: Optional[str]
+    default_path: Optional[str]
+    all: bool
+    all_directory: Optional[str]
+    debug: List[str]
+
+    # Some extra stuff that's stored in CommandLineArguments for convenience but isn't populated by arguments
+    verity_size: Optional[int]
+    machine_id: str
+    force: bool
+    original_umask: int
+    passphrase: Optional[Dict[str, str]]
+
+    output_checksum: Optional[str] = None
+    output_nspawn_settings: Optional[str] = None
+    output_sshkey: Optional[str] = None
+    output_root_hash_file: Optional[str] = None
+    output_bmap: Optional[str] = None
+    cache_pre_inst: Optional[str] = None
+    cache_pre_dev: Optional[str] = None
+    output_signature: Optional[str] = None
+
+    root_partno: Optional[int] = None
+    swap_partno: Optional[int] = None
+    esp_partno: Optional[int] = None
+    xbootldr_partno: Optional[int] = None
+    bios_partno: Optional[int] = None
+    home_partno: Optional[int] = None
+    srv_partno: Optional[int] = None
+    var_partno: Optional[int] = None
+    tmp_partno: Optional[int] = None
+    verity_partno: Optional[int] = None
+
+    releasever: Optional[str] = None
+    ran_sfdisk: bool = False
 
 
 # fmt: off
@@ -511,7 +612,8 @@ def copy_fd(oldfd: int, newfd: int) -> None:
     except OSError as e:
         if e.errno not in {errno.EXDEV, errno.EOPNOTSUPP}:
             raise
-        shutil.copyfileobj(open(oldfd, "rb", closefd=False), open(newfd, "wb", closefd=False))
+        # While mypy handles this correctly, Pyright doesn't yet.
+        shutil.copyfileobj(open(oldfd, "rb", closefd=False), cast(Any, open(newfd, "wb", closefd=False)))
 
 
 def copy_file_object(oldobject: BinaryIO, newobject: BinaryIO) -> None:
@@ -591,7 +693,6 @@ def complete_step(text: str, text2: Optional[str] = None) -> Generator[List[Any]
 
 @complete_step("Detaching namespace")
 def init_namespace(args: CommandLineArguments) -> None:
-    args.original_umask = os.umask(0o000)
     unshare(CLONE_NEWNS)
     run(["mount", "--make-rslave", "/"])
 
@@ -625,7 +726,7 @@ def btrfs_subvol_delete(path: str) -> None:
         if not line:
             continue
         child_subvol_path = line.split(" ", 8)[-1]
-        child_path = os.path.normpath(os.path.join(path, os.path.relpath(child_subvol_path, subvol_path)))
+        child_path = os.path.normpath(os.path.join(path, cast(str, os.path.relpath(child_subvol_path, subvol_path))))
         btrfs_subvol_delete(child_path)
     # Delete the subvolume now that all its descendants have been deleted
     run(["btrfs", "subvol", "delete", path], stdout=DEVNULL, stderr=DEVNULL)
@@ -648,6 +749,13 @@ def btrfs_forget_stale_devices() -> Generator[None, None, None]:
             run(["btrfs", "device", "scan", "-u"])
 
 
+def is_generated_root(args: Union[argparse.Namespace, CommandLineArguments]) -> bool:
+    """Returns whether this configuration means we need to generate a file system from a prepared tree
+
+    This is needed for anything squashfs and when root minimization is required."""
+    return args.minimize or args.output_format.is_squashfs()
+
+
 def image_size(args: CommandLineArguments) -> int:
     size = GPT_HEADER_SIZE + GPT_FOOTER_SIZE
 
@@ -663,6 +771,7 @@ def image_size(args: CommandLineArguments) -> int:
         size += args.tmp_size
     if args.bootable:
         if "uefi" in args.boot_protocols:
+            assert args.esp_size
             size += args.esp_size
         if "bios" in args.boot_protocols:
             size += BIOS_PARTITION_SIZE
@@ -693,6 +802,7 @@ def determine_partition_table(args: CommandLineArguments) -> Tuple[str, bool]:
 
     if args.bootable:
         if "uefi" in args.boot_protocols:
+            assert args.esp_size is not None
             table += f'size={args.esp_size // 512}, type={GPT_ESP}, name="ESP System Partition"\n'
             args.esp_partno = pn
             pn += 1
@@ -749,7 +859,7 @@ def determine_partition_table(args: CommandLineArguments) -> Tuple[str, bool]:
             pn += 1
             run_sfdisk = True
 
-    if not args.generated_root():
+    if not is_generated_root(args):
         table += 'type={}, attrs={}, name="Root Partition"\n'.format(
             gpt_root_native(args.architecture).root,
             "GUID:60" if args.read_only and args.output_format != OutputFormat.gpt_btrfs else "",
@@ -808,6 +918,13 @@ def copy_image_temporary(src: str, dir: str) -> BinaryIO:
         disable_cow(f.name)
         copy_file_object(source, f)
 
+        return f
+
+
+def copy_file_temporary(src: str, dir: str) -> BinaryIO:
+    with open(src, "rb") as source:
+        f = cast(BinaryIO, tempfile.NamedTemporaryFile(prefix=".mkosi-", dir=dir))
+        copy_file_object(source, f)
         return f
 
 
@@ -1011,12 +1128,13 @@ def luks_format_root(
         return
     if args.root_partno is None:
         return
-    if args.generated_root() and not inserting_generated_root:
+    if is_generated_root(args) and not inserting_generated_root:
         return
     if do_run_build_script:
         return
     if cached:
         return
+    assert args.passphrase is not None
 
     with complete_step("LUKS formatting root partition"):
         luks_format(partition(loopdev, args.root_partno), args.passphrase)
@@ -1031,6 +1149,7 @@ def luks_format_home(args: CommandLineArguments, loopdev: str, do_run_build_scri
         return
     if cached:
         return
+    assert args.passphrase is not None
 
     with complete_step("LUKS formatting home partition"):
         luks_format(partition(loopdev, args.home_partno), args.passphrase)
@@ -1045,6 +1164,7 @@ def luks_format_srv(args: CommandLineArguments, loopdev: str, do_run_build_scrip
         return
     if cached:
         return
+    assert args.passphrase is not None
 
     with complete_step("LUKS formatting server data partition"):
         luks_format(partition(loopdev, args.srv_partno), args.passphrase)
@@ -1059,6 +1179,7 @@ def luks_format_var(args: CommandLineArguments, loopdev: str, do_run_build_scrip
         return
     if cached:
         return
+    assert args.passphrase is not None
 
     with complete_step("LUKS formatting variable data partition"):
         luks_format(partition(loopdev, args.var_partno), args.passphrase)
@@ -1073,6 +1194,7 @@ def luks_format_tmp(args: CommandLineArguments, loopdev: str, do_run_build_scrip
         return
     if cached:
         return
+    assert args.passphrase is not None
 
     with complete_step("LUKS formatting temporary data partition"):
         luks_format(partition(loopdev, args.tmp_partno), args.passphrase)
@@ -1085,10 +1207,11 @@ def luks_setup_root(
         return None
     if args.root_partno is None:
         return None
-    if args.generated_root() and not inserting_generated_root:
+    if is_generated_root(args) and not inserting_generated_root:
         return None
     if do_run_build_script:
         return None
+    assert args.passphrase is not None
 
     with complete_step("Opening LUKS root partition"):
         return luks_open(partition(loopdev, args.root_partno), args.passphrase)
@@ -1101,6 +1224,7 @@ def luks_setup_home(args: CommandLineArguments, loopdev: str, do_run_build_scrip
         return None
     if do_run_build_script:
         return None
+    assert args.passphrase is not None
 
     with complete_step("Opening LUKS home partition"):
         return luks_open(partition(loopdev, args.home_partno), args.passphrase)
@@ -1113,6 +1237,7 @@ def luks_setup_srv(args: CommandLineArguments, loopdev: str, do_run_build_script
         return None
     if do_run_build_script:
         return None
+    assert args.passphrase is not None
 
     with complete_step("Opening LUKS server data partition"):
         return luks_open(partition(loopdev, args.srv_partno), args.passphrase)
@@ -1125,6 +1250,7 @@ def luks_setup_var(args: CommandLineArguments, loopdev: str, do_run_build_script
         return None
     if do_run_build_script:
         return None
+    assert args.passphrase is not None
 
     with complete_step("Opening LUKS variable data partition"):
         return luks_open(partition(loopdev, args.var_partno), args.passphrase)
@@ -1137,6 +1263,7 @@ def luks_setup_tmp(args: CommandLineArguments, loopdev: str, do_run_build_script
         return None
     if do_run_build_script:
         return None
+    assert args.passphrase is not None
 
     with complete_step("Opening LUKS temporary data partition"):
         return luks_open(partition(loopdev, args.tmp_partno), args.passphrase)
@@ -1184,7 +1311,7 @@ def luks_setup_all(
 def prepare_root(args: CommandLineArguments, dev: Optional[str], cached: bool) -> None:
     if dev is None:
         return
-    if args.generated_root():
+    if is_generated_root(args):
         return
     if cached:
         return
@@ -1240,11 +1367,15 @@ def mount_loop(args: CommandLineArguments, dev: str, where: str, read_only: bool
     if not args.output_format.is_squashfs():
         options.append("discard")
 
-    if args.compress and args.output_format == OutputFormat.gpt_btrfs:
+    if (
+        args.compress
+        and args.output_format == OutputFormat.gpt_btrfs
+        and not (where.endswith("/efi") or where.endswith("/boot"))
+    ):
         if isinstance(args.compress, bool):
             options.append("compress")
         else:
-            options.append(f",compress={args.compress}")
+            options.append(f"compress={args.compress}")
 
     if read_only:
         options.append("ro")
@@ -1614,7 +1745,7 @@ def reenable_kernel_install(args: CommandLineArguments, root: str) -> None:
     make_executable(hook_path)
 
 
-def make_rpm_list(args: argparse.Namespace, packages: Set[str], do_run_build_script: bool) -> Set[str]:
+def make_rpm_list(args: CommandLineArguments, packages: Set[str], do_run_build_script: bool) -> Set[str]:
     packages = packages.copy()
 
     if args.bootable:
@@ -1748,9 +1879,6 @@ def invoke_dnf(
 
     if args.architecture is not None:
         cmdline += [f"--forcearch={args.architecture}"]
-
-    if args.with_network == "never":
-        cmdline += ["--cacheonly"]
 
     if not args.with_docs:
         cmdline += ["--nodocs"]
@@ -1900,9 +2028,12 @@ def install_clear(args: CommandLineArguments, root: str, do_run_build_script: bo
             )
         )
 
-    print(f"Using {swupd_extract}")
+    cmdline = [swupd_extract, "-output", root]
+    if args.cache_path:
+        cmdline += ["-state", args.cache_path]
+    cmdline += [release, *packages]
 
-    run([swupd_extract, "-output", root, "-state", args.cache_path, release, *packages], check=True)
+    run(cmdline)
 
     os.symlink("../run/systemd/resolve/resolv.conf", os.path.join(root, "etc/resolv.conf"))
 
@@ -2239,7 +2370,7 @@ def debootstrap_knows_arg(arg: str) -> bool:
     return bytes("invalid option", "UTF-8") not in run(["debootstrap", arg], stdout=PIPE, check=False).stdout
 
 
-def install_debian_or_ubuntu(args: CommandLineArguments, root: str, *, do_run_build_script: bool, mirror: str) -> None:
+def install_debian_or_ubuntu(args: CommandLineArguments, root: str, *, do_run_build_script: bool) -> None:
     repos = set(args.repositories) or {"main"}
     # Ubuntu needs the 'universe' repo to install 'dracut'
     if args.distribution == Distribution.ubuntu and args.bootable:
@@ -2262,7 +2393,8 @@ def install_debian_or_ubuntu(args: CommandLineArguments, root: str, *, do_run_bu
     with open(dpkg_io_conf, "w") as f:
         f.write("force-unsafe-io\n")
 
-    cmdline += [args.release, root, mirror]
+    assert args.mirror is not None
+    cmdline += [args.release, root, args.mirror]
     run(cmdline)
 
     # Install extra packages via the secondary APT run, because it is smarter and can deal better with any
@@ -2347,12 +2479,12 @@ def install_debian_or_ubuntu(args: CommandLineArguments, root: str, *, do_run_bu
 
 @complete_step("Installing Debian")
 def install_debian(args: CommandLineArguments, root: str, do_run_build_script: bool) -> None:
-    install_debian_or_ubuntu(args, root, do_run_build_script=do_run_build_script, mirror=args.mirror)
+    install_debian_or_ubuntu(args, root, do_run_build_script=do_run_build_script)
 
 
 @complete_step("Installing Ubuntu")
 def install_ubuntu(args: CommandLineArguments, root: str, do_run_build_script: bool) -> None:
-    install_debian_or_ubuntu(args, root, do_run_build_script=do_run_build_script, mirror=args.mirror)
+    install_debian_or_ubuntu(args, root, do_run_build_script=do_run_build_script)
 
 
 @complete_step("Installing Arch Linux")
@@ -2678,8 +2810,20 @@ def install_arch(args: CommandLineArguments, root: str, do_run_build_script: boo
     with mount_api_vfs(args, root):
         run_pacman(packages)
 
-    with open(os.path.join(root, "etc/locale.gen"), "w") as f:
-        f.write("en_US.UTF-8 UTF-8\n")
+    # If /etc/locale.gen exists, uncomment the desired locale and leave the rest of the file untouched.
+    # If it doesn’t exist, just write the desired locale in it.
+    try:
+
+        def _enable_locale(line: str) -> str:
+            if line.startswith("#en_US.UTF-8"):
+                return line.replace("#", "")
+            return line
+
+        patch_file(os.path.join(root, "etc/locale.gen"), _enable_locale)
+
+    except FileNotFoundError:
+        with open(os.path.join(root, "etc/locale.gen"), "x") as f:
+            f.write("en_US.UTF-8 UTF-8\n")
 
     run_workspace_command(args, root, ["/usr/bin/locale-gen"])
 
@@ -2779,6 +2923,10 @@ def install_opensuse(args: CommandLineArguments, root: str, do_run_build_script:
             return line
 
         patch_file(os.path.join(root, "etc/pam.d/common-auth"), jj)
+
+    if args.autologin:
+        # copy now, patch later (in set_autologin())
+        shutil.copy2(os.path.join(root, "usr/etc/pam.d/login"), os.path.join(root, "etc/pam.d/login"))
 
 
 def install_distribution(args: CommandLineArguments, root: str, do_run_build_script: bool, cached: bool) -> None:
@@ -2891,8 +3039,8 @@ def set_autologin(args: CommandLineArguments, root: str, do_run_build_script: bo
         return
 
     with complete_step("Setting up autologin"):
-        # On Debian, PAM wants the full path to the console device or it will refuse access
-        device_prefix = "/dev/" if args.distribution is Distribution.debian else ""
+        # On Arch, Debian, PAM wants the full path to the console device or it will refuse access
+        device_prefix = "/dev/" if args.distribution in [Distribution.arch, Distribution.debian] else ""
 
         override_dir = os.path.join(root, "etc/systemd/system/console-getty.service.d")
         os.makedirs(override_dir, mode=0o755, exist_ok=True)
@@ -3286,6 +3434,7 @@ def install_build_src(args: CommandLineArguments, root: str, do_run_build_script
         with complete_step("Copying in build script"):
             copy_file(args.build_script, os.path.join(root, "root", os.path.basename(args.build_script)))
 
+    sft: Optional[SourceFileTransfer] = None
     if do_run_build_script:
         sft = args.source_file_transfer
     else:
@@ -3379,7 +3528,7 @@ def make_squashfs(args: CommandLineArguments, root: str, for_cache: bool) -> Opt
 
     if args.compress is not True:
         assert args.compress is not False
-        comp_args += ["-comp", args.compress]
+        comp_args += ["-comp", cast(str, args.compress)]
 
     with complete_step("Creating squashfs file system"):
         f: BinaryIO = cast(
@@ -3566,7 +3715,7 @@ def insert_generated_root(
     image: Optional[BinaryIO],
     for_cache: bool,
 ) -> None:
-    if not args.generated_root():
+    if not is_generated_root(args):
         return
     if not args.output_format.is_disk():
         return
@@ -3575,6 +3724,7 @@ def insert_generated_root(
     assert raw is not None
     assert loopdev is not None
     assert image is not None
+    assert args.root_partno is not None
 
     with complete_step("Inserting generated root partition"):
         args.root_size = insert_partition(
@@ -3627,6 +3777,7 @@ def insert_verity(
     assert loopdev is not None
     assert raw is not None
     assert root_hash is not None
+    assert args.verity_partno is not None
 
     # Use the final 128 bit of the root hash as partition UUID of the verity partition
     u = uuid.UUID(root_hash[-32:])
@@ -3800,6 +3951,8 @@ def write_root_hash_file(args: CommandLineArguments, root_hash: Optional[str]) -
     if root_hash is None:
         return None
 
+    assert args.output_root_hash_file is not None
+
     with complete_step("Writing .roothash file"):
         f: BinaryIO = cast(
             BinaryIO,
@@ -3813,6 +3966,8 @@ def write_root_hash_file(args: CommandLineArguments, root_hash: Optional[str]) -
 def copy_nspawn_settings(args: CommandLineArguments) -> Optional[BinaryIO]:
     if args.nspawn_settings is None:
         return None
+
+    assert args.output_nspawn_settings is not None
 
     with complete_step("Copying nspawn settings file"):
         f: BinaryIO = cast(
@@ -3854,6 +4009,8 @@ def calculate_sha256sum(
     if not args.checksum:
         return None
 
+    assert args.output_checksum is not None
+
     with complete_step("Calculating SHA256SUMS"):
         f: TextIO = cast(
             TextIO,
@@ -3867,8 +4024,10 @@ def calculate_sha256sum(
         if tar is not None:
             hash_file(f, tar, os.path.basename(args.output))
         if root_hash_file is not None:
+            assert args.output_root_hash_file is not None
             hash_file(f, root_hash_file, os.path.basename(args.output_root_hash_file))
         if nspawn_settings is not None:
+            assert args.output_nspawn_settings is not None
             hash_file(f, nspawn_settings, os.path.basename(args.output_nspawn_settings))
 
     return f
@@ -3880,6 +4039,8 @@ def calculate_signature(args: CommandLineArguments, checksum: Optional[IO[Any]])
 
     if checksum is None:
         return None
+
+    assert args.output_signature is not None
 
     with complete_step("Signing SHA256SUMS"):
         f: BinaryIO = cast(
@@ -3905,6 +4066,7 @@ def calculate_bmap(args: CommandLineArguments, raw: Optional[BinaryIO]) -> Optio
     if not args.output_format.is_disk_rw():
         return None
     assert raw is not None
+    assert args.output_bmap is not None
 
     with complete_step("Creating BMAP file"):
         f: TextIO = cast(
@@ -3970,6 +4132,8 @@ def link_output_nspawn_settings(args: CommandLineArguments, path: Optional[str])
     if path is None:
         return
 
+    assert args.output_nspawn_settings is not None
+
     with complete_step("Linking nspawn settings file", "Successfully linked " + args.output_nspawn_settings):
         _link_output(args, path, args.output_nspawn_settings)
 
@@ -3977,6 +4141,8 @@ def link_output_nspawn_settings(args: CommandLineArguments, path: Optional[str])
 def link_output_checksum(args: CommandLineArguments, checksum: Optional[str]) -> None:
     if checksum is None:
         return
+
+    assert args.output_checksum is not None
 
     with complete_step("Linking SHA256SUMS file", "Successfully linked " + args.output_checksum):
         _link_output(args, checksum, args.output_checksum)
@@ -3986,6 +4152,8 @@ def link_output_root_hash_file(args: CommandLineArguments, root_hash_file: Optio
     if root_hash_file is None:
         return
 
+    assert args.output_root_hash_file is not None
+
     with complete_step("Linking .roothash file", "Successfully linked " + args.output_root_hash_file):
         _link_output(args, root_hash_file, args.output_root_hash_file)
 
@@ -3993,6 +4161,8 @@ def link_output_root_hash_file(args: CommandLineArguments, root_hash_file: Optio
 def link_output_signature(args: CommandLineArguments, signature: Optional[str]) -> None:
     if signature is None:
         return
+
+    assert args.output_signature is not None
 
     with complete_step("Linking SHA256SUMS.gpg file", "Successfully linked " + args.output_signature):
         _link_output(args, signature, args.output_signature)
@@ -4002,6 +4172,8 @@ def link_output_bmap(args: CommandLineArguments, bmap: Optional[str]) -> None:
     if bmap is None:
         return
 
+    assert args.output_bmap is not None
+
     with complete_step("Linking .bmap file", "Successfully linked " + args.output_bmap):
         _link_output(args, bmap, args.output_bmap)
 
@@ -4009,6 +4181,8 @@ def link_output_bmap(args: CommandLineArguments, bmap: Optional[str]) -> None:
 def link_output_sshkey(args: CommandLineArguments, sshkey: Optional[str]) -> None:
     if sshkey is None:
         return
+
+    assert args.output_sshkey is not None
 
     with complete_step("Linking private ssh key file", f"Successfully linked {args.output_sshkey}"):
         _link_output(args, sshkey, args.output_sshkey)
@@ -4212,7 +4386,7 @@ class ArgumentParserMkosi(argparse.ArgumentParser):
         "TarStripSELinuxContext": "--tar-strip-selinux-context",
     }
 
-    fromfile_prefix_chars = "@"
+    fromfile_prefix_chars: str = "@"
 
     def __init__(self, *kargs: Any, **kwargs: Any) -> None:
         self._ini_file_section = ""
@@ -4398,7 +4572,7 @@ def create_parser() -> ArgumentParserMkosi:
         help="Enable compression in file system (only gpt_btrfs, subvolume, gpt_squashfs, plain_squashfs)",
     )
     group.add_argument(
-        "--mksquashfs", dest="mksquashfs_tool", type=str.split, help="Script to call instead of mksquashfs"
+        "--mksquashfs", dest="mksquashfs_tool", type=str.split, default=[], help="Script to call instead of mksquashfs"
     )
     group.add_argument(
         "--xz",
@@ -4544,17 +4718,17 @@ def create_parser() -> ArgumentParserMkosi:
         "--esp-size",
         help="Set size of EFI system partition (only gpt_ext4, gpt_xfs, gpt_btrfs, gpt_squashfs)",
         metavar="BYTES",
-    )  # NOQA: E501
+    )
     group.add_argument(
         "--xbootldr-size",
         help="Set size of the XBOOTLDR partition (only gpt_ext4, gpt_xfs, gpt_btrfs, gpt_squashfs)",
         metavar="BYTES",
-    )  # NOQA: E501
+    )
     group.add_argument(
         "--swap-size",
         help="Set size of swap partition (only gpt_ext4, gpt_xfs, gpt_btrfs, gpt_squashfs)",
         metavar="BYTES",
-    )  # NOQA: E501
+    )
     group.add_argument(
         "--home-size", help="Set size of /home partition (only gpt_ext4, gpt_xfs, gpt_squashfs)", metavar="BYTES"
     )
@@ -4641,7 +4815,7 @@ def create_parser() -> ArgumentParserMkosi:
     return parser
 
 
-def load_distribution(args: CommandLineArguments) -> CommandLineArguments:
+def load_distribution(args: argparse.Namespace) -> argparse.Namespace:
     if args.distribution is not None:
         args.distribution = Distribution[args.distribution]
 
@@ -4660,7 +4834,7 @@ def load_distribution(args: CommandLineArguments) -> CommandLineArguments:
     return args
 
 
-def parse_args(argv: Optional[List[str]] = None) -> Dict[str, CommandLineArguments]:
+def parse_args(input: Optional[List[str]] = None) -> Dict[str, argparse.Namespace]:
     """Load default values from files and parse command line arguments
 
     Do all about default files and command line arguments parsing. If --all argument is passed
@@ -4670,10 +4844,10 @@ def parse_args(argv: Optional[List[str]] = None) -> Dict[str, CommandLineArgumen
     parser = create_parser()
 
     # always work on a copy, argv will be altered which might has some side effects e.g. in unit tests.
-    if argv is None:
+    if input is None:
         argv = copy.deepcopy(sys.argv[1:])
     else:
-        argv = copy.deepcopy(argv)
+        argv = copy.deepcopy(input)
 
     # If ArgumentParserMkosi loads settings from mkosi.default files, the settings from files
     # are converted to command line arguments. This breaks ArgumentParser's support for default
@@ -4755,15 +4929,15 @@ def parse_args(argv: Optional[List[str]] = None) -> Dict[str, CommandLineArgumen
     return args_all
 
 
-def parse_args_file(argv_post_parsed: List[str], default_path: str) -> CommandLineArguments:
+def parse_args_file(argv_post_parsed: List[str], default_path: str) -> argparse.Namespace:
     """Parse just one mkosi.* file (--all mode)"""
     argv_post_parsed.insert(1, ArgumentParserMkosi.fromfile_prefix_chars + default_path)
     parser = create_parser()
     # parse all parameters handled by mkosi. Parameters forwarded to subprocesses such as nspawn or qemu end up in cmdline_argv.
-    return parser.parse_args(argv_post_parsed, CommandLineArguments())
+    return parser.parse_args(argv_post_parsed)
 
 
-def parse_args_file_group(argv_post_parsed: List[str], default_path: str) -> CommandLineArguments:
+def parse_args_file_group(argv_post_parsed: List[str], default_path: str) -> argparse.Namespace:
     """Parse a set of mkosi.default and mkosi.default.d/* files."""
     # Add the @ prefixed filenames to current argument list in inverse priority order.
     all_defaults_files = []
@@ -4780,10 +4954,10 @@ def parse_args_file_group(argv_post_parsed: List[str], default_path: str) -> Com
     parser = create_parser()
 
     # parse all parameters handled by mkosi. Parameters forwarded to subprocesses such as nspawn or qemu end up in cmdline_argv.
-    return parser.parse_args(argv_post_parsed, CommandLineArguments())
+    return parser.parse_args(argv_post_parsed)
 
 
-def parse_args_distribution_group(argv_post_parsed: List[str], distribution: str) -> CommandLineArguments:
+def parse_args_distribution_group(argv_post_parsed: List[str], distribution: str) -> argparse.Namespace:
     all_defaults_files = []
     distribution_dir = f"mkosi.default.d/{distribution}"
     if os.path.isdir(distribution_dir):
@@ -4801,7 +4975,7 @@ def parse_args_distribution_group(argv_post_parsed: List[str], distribution: str
         # Append to the end if the args only contain files and no regular args.
         argv_post_parsed += all_defaults_files
 
-    return create_parser().parse_args(argv_post_parsed, CommandLineArguments())
+    return create_parser().parse_args(argv_post_parsed)
 
 
 def parse_bytes(num_bytes: Optional[str]) -> Optional[int]:
@@ -4843,6 +5017,7 @@ def detect_distribution() -> Tuple[Optional[Distribution], Optional[str]]:
     version_id = None
     version_codename = None
     extracted_codename = None
+    dist_id_like = []
 
     for ln in f:
         if ln.startswith("ID="):
@@ -4884,7 +5059,10 @@ def detect_distribution() -> Tuple[Optional[Distribution], Optional[str]]:
     return d, version_id
 
 
-def unlink_try_hard(path: str) -> None:
+def unlink_try_hard(path: Optional[str]) -> None:
+    if path is None:
+        return
+
     try:
         os.unlink(path)
     except:  # NOQA: E722
@@ -4993,7 +5171,7 @@ def parse_boolean(s: str) -> bool:
     raise ValueError(f"Invalid literal for bool(): {s!r}")
 
 
-def find_nspawn_settings(args: CommandLineArguments) -> None:
+def find_nspawn_settings(args: argparse.Namespace) -> None:
     if args.nspawn_settings is not None:
         return
 
@@ -5001,7 +5179,7 @@ def find_nspawn_settings(args: CommandLineArguments) -> None:
         args.nspawn_settings = "mkosi.nspawn"
 
 
-def find_extra(args: CommandLineArguments) -> None:
+def find_extra(args: argparse.Namespace) -> None:
 
     if len(args.extra_trees) > 0:
         return
@@ -5012,7 +5190,7 @@ def find_extra(args: CommandLineArguments) -> None:
         args.extra_trees.append("mkosi.extra.tar")
 
 
-def find_skeleton(args: CommandLineArguments) -> None:
+def find_skeleton(args: argparse.Namespace) -> None:
 
     if len(args.skeleton_trees) > 0:
         return
@@ -5024,7 +5202,7 @@ def find_skeleton(args: CommandLineArguments) -> None:
 
 
 def args_find_path(
-    args: CommandLineArguments, name: str, path: str, *, type_call: Callable[[str], Any] = lambda x: x
+    args: argparse.Namespace, name: str, path: str, *, type_call: Callable[[str], Any] = lambda x: x
 ) -> None:
     if getattr(args, name) is not None:
         return
@@ -5034,7 +5212,7 @@ def args_find_path(
         setattr(args, name, path)
 
 
-def find_cache(args: CommandLineArguments) -> None:
+def find_cache(args: argparse.Namespace) -> None:
     if args.cache_path is not None:
         return
 
@@ -5060,7 +5238,7 @@ def require_private_file(name: str, description: str) -> None:
         )
 
 
-def find_passphrase(args: CommandLineArguments) -> None:
+def find_passphrase(args: argparse.Namespace) -> None:
     if args.encrypt is None:
         args.passphrase = None
         return
@@ -5081,7 +5259,7 @@ def find_passphrase(args: CommandLineArguments) -> None:
             MkosiPrinter.info("Passphrase doesn't match confirmation. Please try again.")
 
 
-def find_password(args: CommandLineArguments) -> None:
+def find_password(args: argparse.Namespace) -> None:
     if args.password is not None:
         return
 
@@ -5095,7 +5273,7 @@ def find_password(args: CommandLineArguments) -> None:
         pass
 
 
-def find_secure_boot(args: CommandLineArguments) -> None:
+def find_secure_boot(args: argparse.Namespace) -> None:
     if not args.secure_boot:
         return
 
@@ -5142,7 +5320,7 @@ def check_valid_script(path: str) -> None:
         die(f"{path} is not executable")
 
 
-def load_args(args: CommandLineArguments) -> CommandLineArguments:
+def load_args(args: argparse.Namespace) -> CommandLineArguments:
     global arg_debug
     arg_debug = args.debug
 
@@ -5195,6 +5373,29 @@ def load_args(args: CommandLineArguments) -> CommandLineArguments:
             args.release = "3.0"
         elif args.distribution == Distribution.openmandriva:
             args.release = "cooker"
+        else:
+            args.release = "rolling"
+
+    if args.bootable:
+        if args.output_format in (
+            OutputFormat.directory,
+            OutputFormat.subvolume,
+            OutputFormat.tar,
+            OutputFormat.plain_squashfs,
+        ):
+            die("Directory, subvolume, tar and plain squashfs images cannot be booted.")
+
+        if not args.boot_protocols:
+            args.boot_protocols = ["uefi"]
+
+            if args.distribution == Distribution.photon:
+                args.boot_protocols = ["bios"]
+
+        if not {"uefi", "bios"}.issuperset(args.boot_protocols):
+            die("Not a valid boot protocol")
+
+        if "uefi" in args.boot_protocols and args.distribution == Distribution.photon:
+            die(f"uefi boot not supported for {args.distribution}")
 
     if args.distribution in (Distribution.centos, Distribution.centos_epel):
         epel_release = int(args.release.split(".")[0])
@@ -5235,29 +5436,8 @@ def load_args(args: CommandLineArguments) -> CommandLineArguments:
     if args.minimize and not args.output_format.can_minimize():
         die("Minimal file systems only supported for ext4 and btrfs.")
 
-    if args.generated_root() and args.incremental:
+    if is_generated_root(args) and args.incremental:
         die("Sorry, incremental mode is currently not supported for squashfs or minimized file systems.")
-
-    if args.bootable:
-        if args.output_format in (
-            OutputFormat.directory,
-            OutputFormat.subvolume,
-            OutputFormat.tar,
-            OutputFormat.plain_squashfs,
-        ):
-            die("Directory, subvolume, tar and plain squashfs images cannot be booted.")
-
-        if not args.boot_protocols:
-            args.boot_protocols = ["uefi"]
-
-            if args.distribution == Distribution.photon:
-                args.boot_protocols = ["bios"]
-
-        if not {"uefi", "bios"}.issuperset(args.boot_protocols):
-            die("Not a valid boot protocol")
-
-        if "uefi" in args.boot_protocols and args.distribution == Distribution.photon:
-            die(f"uefi boot not supported for {args.distribution}")
 
     if args.encrypt is not None:
         if not args.output_format.is_disk():
@@ -5426,7 +5606,7 @@ def load_args(args: CommandLineArguments) -> CommandLineArguments:
     if not args.read_only:
         args.kernel_command_line.append("rw")
 
-    if args.generated_root() and "bios" in args.boot_protocols:
+    if is_generated_root(args) and "bios" in args.boot_protocols:
         die("Sorry, BIOS cannot be combined with --minimize or squashfs filesystems")
 
     if args.bootable and args.distribution in (Distribution.clear, Distribution.photon):
@@ -5454,7 +5634,15 @@ def load_args(args: CommandLineArguments) -> CommandLineArguments:
     if args.ssh and not args.network_veth:
         die("--ssh cannot be used without --network-veth")
 
-    return args
+    args.original_umask = os.umask(0o000)
+
+    # Let's define a fixed machine ID for all our build-time
+    # runs. We'll strip it off the final image, but some build-time
+    # tools (dracut...) want a fixed one, hence provide one, and
+    # always the same
+    args.machine_id = uuid.uuid4().hex
+
+    return CommandLineArguments(**vars(args))
 
 
 def check_output(args: CommandLineArguments) -> None:
@@ -5478,7 +5666,7 @@ def check_output(args: CommandLineArguments) -> None:
             die("Output file " + f + " exists already. (Consider invocation with --force.)")
 
 
-def yes_no(b: bool) -> str:
+def yes_no(b: Optional[bool]) -> str:
     return "yes" if b else "no"
 
 
@@ -5554,7 +5742,7 @@ def print_summary(args: CommandLineArguments) -> None:
 
     MkosiPrinter.info("                 Read-only: " + yes_no(args.read_only))
     detail = " ({})".format(args.compress) if args.compress and not isinstance(args.compress, bool) else ""
-    MkosiPrinter.info("            FS Compression: " + yes_no(args.compress) + detail)
+    MkosiPrinter.info("            FS Compression: " + yes_no(cast(bool, args.compress)) + detail)
 
     MkosiPrinter.info("            XZ Compression: " + yes_no(args.xz))
     if args.mksquashfs_tool:
@@ -5704,6 +5892,8 @@ def setup_ssh(
     if for_cache:
         return None
 
+    assert args.output_sshkey is not None
+
     f: TextIO = cast(
         TextIO,
         tempfile.NamedTemporaryFile(
@@ -5812,7 +6002,7 @@ def build_image(
                 args,
                 root,
                 loopdev,
-                None if args.generated_root() else encrypted_root,
+                None if is_generated_root(args) else encrypted_root,
                 encrypted_home,
                 encrypted_srv,
                 encrypted_var,
@@ -5862,7 +6052,7 @@ def build_image(
                 args,
                 root,
                 loopdev,
-                None if args.generated_root() and for_cache else encrypted_root,
+                None if is_generated_root(args) and for_cache else encrypted_root,
                 encrypted_home,
                 encrypted_srv,
                 encrypted_var,
@@ -5969,6 +6159,9 @@ def need_cache_images(args: CommandLineArguments) -> bool:
     if args.force_count > 1:
         return True
 
+    assert args.cache_pre_dev
+    assert args.cache_pre_inst
+
     return not os.path.exists(args.cache_pre_dev) or not os.path.exists(args.cache_pre_inst)
 
 
@@ -6001,15 +6194,14 @@ def remove_artifacts(
 
 
 def build_stuff(args: CommandLineArguments) -> None:
-    # Let's define a fixed machine ID for all our build-time
-    # runs. We'll strip it off the final image, but some build-time
-    # tools (dracut...) want a fixed one, hence provide one, and
-    # always the same
-    args.machine_id = uuid.uuid4().hex
-
     make_output_dir(args)
     setup_package_cache(args)
     workspace = setup_workspace(args)
+
+    root_hash = None
+    raw = None
+    tar = None
+    sshkey = None
 
     # Make sure tmpfiles' aging doesn't interfere with our workspace
     # while we are working on it.
@@ -6098,7 +6290,7 @@ def virt_name(args: CommandLineArguments) -> str:
     name = args.hostname or os.path.splitext(os.path.basename(args.output))[0]
     # Shorten to 13 characters so we can prefix with ve- or vt- for the network veth ifname which is limited
     # to 16 characters.
-    return cast(str, name[:13])
+    return name[:13]
 
 
 def has_networkd_vm_vt() -> bool:
@@ -6167,7 +6359,7 @@ def run_shell(args: CommandLineArguments) -> None:
     if args.verb == "boot":
         cmdline.append("--boot")
 
-    if args.generated_root() or args.verity:
+    if is_generated_root(args) or args.verity:
         cmdline.append("--volatile=overlay")
 
     if args.network_veth:
@@ -6190,28 +6382,48 @@ def run_shell(args: CommandLineArguments) -> None:
         run(cmdline, stdout=sys.stdout, stderr=sys.stderr)
 
 
-def run_qemu(args: CommandLineArguments) -> None:
-    # Look for the right qemu command line to use
-    has_kvm = os.path.exists("/dev/kvm")
-    cmdlines: List[List[str]] = []
+def find_qemu_binary() -> str:
     ARCH_BINARIES = {"x86_64": "qemu-system-x86_64", "i386": "qemu-system-i386"}
-    arch_binary = ARCH_BINARIES.get(platform.machine(), None)
-    accel = "kvm" if has_kvm else "tcg"
-    if arch_binary is not None:
-        cmdlines += [[arch_binary, "-machine", f"accel={accel}"]]
-    cmdlines += [
-        ["qemu", "-machine", f"accel={accel}"],
-        ["qemu-kvm"],
-    ]
-    for cmdline in cmdlines:
-        if shutil.which(cmdline[0]) is not None:
-            break
-    else:
-        die("Couldn't find QEMU/KVM binary")
+    arch_binary = ARCH_BINARIES.get(platform.machine())
 
+    binaries: List[str] = []
+    if arch_binary is not None:
+        binaries.append(arch_binary)
+    binaries += ["qemu", "qemu-kvm"]
+    for binary in binaries:
+        if shutil.which(binary) is not None:
+            return binary
+
+    die("Couldn't find QEMU/KVM binary")
+
+
+def find_qemu_firmware() -> Tuple[str, bool]:
     # UEFI firmware blobs are found in a variety of locations,
     # depending on distribution and package.
     FIRMWARE_LOCATIONS = []
+
+    if platform.machine() == "x86_64":
+        FIRMWARE_LOCATIONS.append("/usr/share/ovmf/x64/OVMF_CODE.secboot.fd")
+    elif platform.machine() == "i386":
+        FIRMWARE_LOCATIONS.append("/usr/share/edk2/ovmf-ia32/OVMF_CODE.secboot.fd")
+
+    FIRMWARE_LOCATIONS.append("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd")
+    FIRMWARE_LOCATIONS.append("/usr/share/qemu/OVMF_CODE.secboot.fd")
+    FIRMWARE_LOCATIONS.append("/usr/share/ovmf/OVMF.secboot.fd")
+
+    for firmware in FIRMWARE_LOCATIONS:
+        if os.path.exists(firmware):
+            return firmware, True
+
+    warn(
+        """\
+        Couldn't find OVMF firmware blob with secure boot support,
+        falling back to OVMF firmware blobs without secure boot support.
+        """
+    )
+
+    FIRMWARE_LOCATIONS = []
+
     # First, we look in paths that contain the architecture –
     # if they exist, they’re almost certainly correct.
     if platform.machine() == "x86_64":
@@ -6229,24 +6441,52 @@ def run_qemu(args: CommandLineArguments) -> None:
 
     for firmware in FIRMWARE_LOCATIONS:
         if os.path.exists(firmware):
-            break
-    else:
-        die("Couldn't find OVMF UEFI firmware blob.")
+            return firmware, False
 
-    cmdline += ["-smp", "2", "-m", "1024"]
+    die("Couldn't find OVMF UEFI firmware blob.")
 
-    if has_kvm:
-        cmdline += ["-cpu", "host"]
 
-    if "uefi" in args.boot_protocols:
-        cmdline += ["-drive", f"if=pflash,format=raw,readonly,file={firmware}"]
+def find_ovmf_vars() -> str:
+    OVMF_VARS_LOCATIONS = []
 
-    cmdline += [
+    if platform.machine() == "x86_64":
+        OVMF_VARS_LOCATIONS.append("/usr/share/ovmf/x64/OVMF_VARS.fd")
+    elif platform.machine() == "i386":
+        OVMF_VARS_LOCATIONS.append("/usr/share/edk2/ovmf-ia32/OVMF_VARS.fd")
+
+    OVMF_VARS_LOCATIONS.append("/usr/share/edk2/ovmf/OVMF_VARS.fd")
+    OVMF_VARS_LOCATIONS.append("/usr/share/qemu/OVMF_VARS.fd")
+    OVMF_VARS_LOCATIONS.append("/usr/share/ovmf/OVMF_VARS.fd")
+
+    for location in OVMF_VARS_LOCATIONS:
+        if os.path.exists(location):
+            return location
+
+    die("Couldn't find OVMF UEFI variables file.")
+
+
+def run_qemu(args: CommandLineArguments) -> None:
+    has_kvm = os.path.exists("/dev/kvm")
+    accel = "kvm" if has_kvm else "tcg"
+
+    firmware, fw_supports_sb = find_qemu_firmware()
+
+    cmdline = [
+        find_qemu_binary(),
+        "-machine",
+        f"type=q35,accel={accel},smm={'on' if fw_supports_sb else 'off'}",
+        "-smp",
+        "2",
+        "-m",
+        "1024",
         "-object",
         "rng-random,filename=/dev/urandom,id=rng0",
         "-device",
         "virtio-rng-pci,rng=rng0,id=rng-device0",
     ]
+
+    if has_kvm:
+        cmdline += ["-cpu", "host"]
 
     if args.qemu_headless:
         # -nodefaults removes the default CDROM device which avoids an error message during boot
@@ -6269,14 +6509,36 @@ def run_qemu(args: CommandLineArguments) -> None:
         # after it is created.
         cmdline += ["-nic", f"tap,script=no,downscript=no,ifname={ifname},model=virtio-net-pci"]
 
+    if "uefi" in args.boot_protocols:
+        cmdline += ["-drive", f"if=pflash,format=raw,readonly,file={firmware}"]
+
     with contextlib.ExitStack() as stack:
+        if fw_supports_sb:
+            ovmf_vars = stack.enter_context(copy_file_temporary(src=find_ovmf_vars(), dir=tmp_dir()))
+            cmdline += [
+                "-global",
+                "ICH9-LPC.disable_s3=1",
+                "-global",
+                "driver=cfi.pflash01,property=secure,value=on",
+                "-drive",
+                f"file={ovmf_vars.name},if=pflash,format=raw",
+            ]
+
         if args.ephemeral:
             f = stack.enter_context(copy_image_temporary(src=args.output, dir=os.path.dirname(args.output)))
             fname = f.name
         else:
             fname = args.output
 
-        cmdline += ["-drive", f"format={'qcow2' if args.qcow2 else 'raw'},file={fname},if=virtio"]
+        cmdline += [
+            "-drive",
+            f"if=none,id=hd,file={fname},format={'qcow2' if args.qcow2 else 'raw'}",
+            "-device",
+            "virtio-scsi-pci,id=scsi",
+            "-device",
+            "scsi-hd,drive=hd,bootindex=1",
+        ]
+
         cmdline += args.cmdline
 
         print_running_cmd(cmdline)
@@ -6321,6 +6583,8 @@ def find_address(args: CommandLineArguments) -> Tuple[str, str]:
 
 
 def run_ssh(args: CommandLineArguments) -> None:
+    assert args.output_sshkey is not None
+
     if not os.path.exists(args.output_sshkey):
         die(
             f"SSH key not found at {args.output_sshkey}. Are you running from the project's root directory "
@@ -6443,12 +6707,12 @@ def expand_specifier(s: str) -> str:
     return s.replace("%u", user)
 
 
-def needs_build(args: CommandLineArguments) -> bool:
+def needs_build(args: Union[argparse.Namespace, CommandLineArguments]) -> bool:
     return args.verb == "build" or (not os.path.exists(args.output) and args.verb in MKOSI_COMMANDS_NEED_BUILD)
 
 
-def run_verb(args: CommandLineArguments) -> None:
-    load_args(args)
+def run_verb(raw: argparse.Namespace) -> None:
+    args = load_args(raw)
 
     prepend_to_environ_path(args.extra_search_paths)
 
